@@ -29,6 +29,7 @@ class AppDestinations {
   static const String customers = 'customers';
   static const String suppliers = 'suppliers';
   static const String purchases = 'purchases';
+  static const String pos = 'pos';
   static const String sales = 'sales';
   static const String inventory = 'inventory';
   static const String payments = 'payments';
@@ -86,11 +87,19 @@ class AppDestinations {
       description: 'Wholesale inward invoices and stock purchase logs',
     ),
     NavDestination(
+      id: pos,
+      title: 'POS Billing',
+      route: '/pos',
+      icon: Icons.point_of_sale_rounded,
+      activeIcon: Icons.point_of_sale_rounded,
+      description: 'Point of Sale retail & wholesale fast billing terminal',
+    ),
+    NavDestination(
       id: sales,
       title: 'Sales',
       route: '/sales',
-      icon: Icons.point_of_sale_rounded,
-      activeIcon: Icons.point_of_sale_rounded,
+      icon: Icons.receipt_long_outlined,
+      activeIcon: Icons.receipt_long_rounded,
       description: 'Wholesale billing, customer invoices, and receipts',
     ),
     NavDestination(

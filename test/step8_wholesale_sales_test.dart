@@ -555,7 +555,6 @@ void main() {
       expect(movements.isNotEmpty, isTrue);
       expect(movements.first.previousStock, equals(40));
     });
-
     test('17. Correct new stock recorded in stock movement', () async {
       final (_, bookId) = await setupCustomerAndBook(initialStock: 40);
 

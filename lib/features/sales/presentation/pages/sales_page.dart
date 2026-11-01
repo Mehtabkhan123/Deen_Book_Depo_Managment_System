@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import '../../../../core/routing/app_destinations.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/app_text_styles.dart';
+import '../../../navigation/presentation/bloc/navigation_bloc.dart';
 import '../../../../shared/models/sale.dart';
 import '../../../../shared/widgets/app_button.dart';
 import '../../../../shared/widgets/app_dropdown.dart';
@@ -215,8 +217,20 @@ class _SalesPageState extends State<SalesPage> {
                     ),
                     const SizedBox(width: 12),
                     AppButton(
+                      label: 'POS Terminal',
+                      icon: Icons.point_of_sale_rounded,
+                      variant: AppButtonVariant.primary,
+                      onPressed: () {
+                        context
+                            .read<NavigationBloc>()
+                            .add(const NavigateTo(AppDestinations.pos));
+                      },
+                    ),
+                    const SizedBox(width: 12),
+                    AppButton(
                       label: 'New Wholesale Sale',
                       icon: Icons.add_rounded,
+                      variant: AppButtonVariant.secondary,
                       onPressed: state is SalesLoaded
                           ? () => _openNewSaleDialog(state)
                           : null,

@@ -586,9 +586,54 @@ class _SaleFormDialogState extends State<SaleFormDialog> {
                                           : AppColors.successText,
                                     ),
                                   ),
-                                  const SizedBox(width: 16),
+                                  const SizedBox(width: 14),
                                   Text(
-                                    'Calculated Line Total: Rs. ${_lineTotal.toStringAsFixed(2)}',
+                                    'Pricing:',
+                                    style: AppTextStyles.caption.copyWith(fontWeight: FontWeight.w600),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  InkWell(
+                                    onTap: () {
+                                      setState(() {
+                                        _itemPriceController.text =
+                                            _currentSelectedBook!.wholesalePrice.toStringAsFixed(2);
+                                      });
+                                    },
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: AppColors.primary.withValues(alpha: 0.1),
+                                        borderRadius: BorderRadius.circular(4),
+                                      ),
+                                      child: Text(
+                                        'Wholesale (Rs. ${_currentSelectedBook!.wholesalePrice.toStringAsFixed(2)})',
+                                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppColors.primary),
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  InkWell(
+                                    onTap: () {
+                                      setState(() {
+                                        _itemPriceController.text =
+                                            _currentSelectedBook!.retailPrice.toStringAsFixed(2);
+                                      });
+                                    },
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: AppColors.secondary.withValues(alpha: 0.1),
+                                        borderRadius: BorderRadius.circular(4),
+                                      ),
+                                      child: Text(
+                                        'Retail (Rs. ${_currentSelectedBook!.retailPrice.toStringAsFixed(2)})',
+                                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppColors.secondary),
+                                      ),
+                                    ),
+                                  ),
+                                  const Spacer(),
+                                  Text(
+                                    'Line Total: Rs. ${_lineTotal.toStringAsFixed(2)}',
                                     style: const TextStyle(
                                       fontSize: 12,
                                       fontWeight: FontWeight.w600,

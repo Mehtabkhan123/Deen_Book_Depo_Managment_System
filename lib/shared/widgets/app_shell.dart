@@ -9,6 +9,7 @@ import '../../features/dashboard/presentation/pages/dashboard_page.dart';
 import '../../features/inventory/presentation/pages/inventory_page.dart';
 import '../../features/navigation/presentation/bloc/navigation_bloc.dart';
 import '../../features/purchases/presentation/pages/purchases_page.dart';
+import '../../features/sales/presentation/pages/pos_billing_page.dart';
 import '../../features/sales/presentation/pages/sales_page.dart';
 import '../../features/suppliers/presentation/pages/suppliers_page.dart';
 import 'placeholder_view.dart';
@@ -84,6 +85,8 @@ class AppShell extends StatelessWidget {
         return const SuppliersPage();
       case AppDestinations.purchases:
         return const PurchasesPage();
+      case AppDestinations.pos:
+        return const PosBillingPage();
       case AppDestinations.sales:
         return const SalesPage();
       case AppDestinations.inventory:
