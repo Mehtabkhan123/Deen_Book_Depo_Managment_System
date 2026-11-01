@@ -14,6 +14,8 @@ class AppCard extends StatelessWidget {
   final EdgeInsetsGeometry? headerPadding;
   final VoidCallback? onTap;
 
+  final bool expand;
+
   const AppCard({
     super.key,
     required this.child,
@@ -25,6 +27,7 @@ class AppCard extends StatelessWidget {
     this.padding = const EdgeInsets.all(20),
     this.headerPadding,
     this.onTap,
+    this.expand = false,
   });
 
   @override
@@ -32,11 +35,17 @@ class AppCard extends StatelessWidget {
     final effectiveTrailing = trailing ?? headerTrailing;
     final hasHeader = title != null || headerLeading != null || effectiveTrailing != null;
 
-    final content = Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        if (hasHeader) ...[
+    final Widget body = Padding(
+      padding: padding,
+      child: child,
+    );
+
+    final Widget content;
+    if (hasHeader) {
+      content = Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: expand ? MainAxisSize.max : MainAxisSize.min,
+        children: [
           Padding(
             padding: headerPadding ?? const EdgeInsets.fromLTRB(20, 18, 20, 14),
             child: Row(
@@ -70,13 +79,12 @@ class AppCard extends StatelessWidget {
             ),
           ),
           const Divider(height: 1, thickness: 1, color: AppColors.border),
+          if (expand) Expanded(child: body) else body,
         ],
-        Padding(
-          padding: padding,
-          child: child,
-        ),
-      ],
-    );
+      );
+    } else {
+      content = body;
+    }
 
     return Material(
       color: AppColors.surface,

@@ -81,8 +81,6 @@ class _PosBillingPageState extends State<PosBillingPage> {
   final List<PosCartItem> _cartItems = [];
 
   // Live Book Search Suggestions
-  List<Book> _matchingBooks = [];
-  bool _isSearching = false;
   Timer? _searchDebounce;
 
   @override
@@ -94,6 +92,8 @@ class _PosBillingPageState extends State<PosBillingPage> {
     final salesBloc = context.read<SalesBloc>();
     if (salesBloc.state is SalesInitial) {
       salesBloc.add(const LoadSales());
+    } else {
+      salesBloc.add(const RefreshSales());
     }
 
     _searchFocusNode.requestFocus();
@@ -137,90 +137,126 @@ class _PosBillingPageState extends State<PosBillingPage> {
     });
   }
 
-  void _onSearchQueryChanged(String query, List<Book> allBooks) {
+  void _onSearchQueryChanged(String query) {
     _searchDebounce?.cancel();
-    final q = query.trim().toLowerCase();
+    final q = query.trim();
 
     if (q.isEmpty) {
-      setState(() {
-        _matchingBooks = [];
-        _isSearching = false;
-      });
+      context.read<SalesBloc>().add(const ClearPosBookSearch());
       return;
     }
 
     _searchDebounce = Timer(const Duration(milliseconds: 150), () {
-      final matches = allBooks
-          .where((book) {
-            final nameMatch = book.name.toLowerCase().contains(q);
-            final isbnMatch =
-                book.isbn != null && book.isbn!.toLowerCase().contains(q);
-            final authorMatch =
-                book.author != null && book.author!.toLowerCase().contains(q);
-            return nameMatch || isbnMatch || authorMatch;
-          })
-          .take(10)
-          .toList();
-
       if (mounted) {
-        setState(() {
-          _matchingBooks = matches;
-          _isSearching = true;
-        });
+        context.read<SalesBloc>().add(SearchPosBooks(q));
       }
     });
   }
 
-  void _onSearchSubmitted(String query, List<Book> allBooks) {
-    final q = query.trim().toLowerCase();
+  void _onSearchSubmitted(String query, SalesLoaded? state) async {
+    final q = query.trim();
     if (q.isEmpty) return;
 
-    // Check for exact barcode / ISBN match first
     Book? targetBook;
-    try {
-      targetBook = allBooks.firstWhere(
-        (b) => b.isbn != null && b.isbn!.toLowerCase() == q,
-      );
-    } catch (_) {
+    // 1. Check if there are active search results in state
+    if (state != null && state.posSearchResults.isNotEmpty) {
+      final qLower = q.toLowerCase();
+      final cleanQ = qLower.replaceAll('-', '').replaceAll(' ', '');
       try {
-        targetBook = allBooks.firstWhere((b) => b.name.toLowerCase() == q);
+        targetBook = state.posSearchResults.firstWhere((b) {
+          final bIsbn = (b.isbn ?? '').toLowerCase();
+          final bClean = bIsbn.replaceAll('-', '').replaceAll(' ', '');
+          return bIsbn == qLower || (cleanQ.isNotEmpty && bClean == cleanQ);
+        });
       } catch (_) {
-        if (_matchingBooks.isNotEmpty) {
-          targetBook = _matchingBooks.first;
+        try {
+          targetBook = state.posSearchResults.firstWhere(
+            (b) => b.name.toLowerCase() == qLower,
+          );
+        } catch (_) {
+          targetBook = state.posSearchResults.first;
         }
       }
     }
 
+    // 2. Direct SQLite repository search fallback
+    if (targetBook == null && mounted) {
+      try {
+        final matches =
+            await context.read<SalesBloc>().bookRepository.search(q);
+        if (matches.isNotEmpty) {
+          final qLower = q.toLowerCase();
+          final cleanQ = qLower.replaceAll('-', '').replaceAll(' ', '');
+          try {
+            targetBook = matches.firstWhere((b) {
+              final bIsbn = (b.isbn ?? '').toLowerCase();
+              final bClean = bIsbn.replaceAll('-', '').replaceAll(' ', '');
+              return bIsbn == qLower || (cleanQ.isNotEmpty && bClean == cleanQ);
+            });
+          } catch (_) {
+            targetBook = matches.first;
+          }
+        }
+      } catch (_) {}
+    }
+
     if (targetBook != null) {
+      if (targetBook.stockQuantity <= 0) {
+        _showSnackbar(
+          'Cannot add "${targetBook.name}": Book is currently OUT OF STOCK (0 available in warehouse).',
+          isError: true,
+        );
+        return;
+      }
       _addBookToCart(targetBook);
       _searchController.clear();
-      setState(() {
-        _matchingBooks = [];
-        _isSearching = false;
-      });
-      _searchFocusNode.requestFocus();
+      if (mounted) {
+        context.read<SalesBloc>().add(const ClearPosBookSearch());
+        _searchFocusNode.requestFocus();
+      }
+    } else {
+      _showSnackbar('No book found matching "$q".', isError: true);
     }
   }
 
   void _addBookToCart(Book book) {
+    if (book.stockQuantity <= 0) {
+      _showSnackbar(
+        'Cannot add "${book.name}": Book is OUT OF STOCK (0 available in warehouse).',
+        isError: true,
+      );
+      return;
+    }
+
     final existingIndex = _cartItems.indexWhere(
       (item) => item.book.id == book.id,
     );
 
-    setState(() {
-      if (existingIndex >= 0) {
+    if (existingIndex >= 0) {
+      final currentQty = _cartItems[existingIndex].quantity;
+      if (currentQty + 1 > book.stockQuantity) {
+        _showSnackbar(
+          'Cannot add more: "${book.name}" has only ${book.stockQuantity} in stock (already in cart: $currentQty).',
+          isError: true,
+        );
+        return;
+      }
+      setState(() {
         _cartItems[existingIndex].quantity += 1;
-      } else {
-        final initialPrice = _saleTier == PosSaleTier.retail
-            ? book.retailPrice
-            : book.wholesalePrice;
+        _syncPaidAmountIfFullPaid();
+      });
+    } else {
+      final initialPrice = _saleTier == PosSaleTier.retail
+          ? book.retailPrice
+          : book.wholesalePrice;
 
+      setState(() {
         _cartItems.add(
           PosCartItem(book: book, quantity: 1, unitPrice: initialPrice),
         );
-      }
-      _syncPaidAmountIfFullPaid();
-    });
+        _syncPaidAmountIfFullPaid();
+      });
+    }
   }
 
   void _updateCartItemQuantity(int index, int newQty) {
@@ -456,9 +492,6 @@ class _PosBillingPageState extends State<PosBillingPage> {
         final customers = state is SalesLoaded
             ? state.customers.values.toList()
             : <Customer>[];
-        final books = state is SalesLoaded
-            ? state.books.values.toList()
-            : <Book>[];
         final recentSales = state is SalesLoaded
             ? state.sales.take(8).toList()
             : <Sale>[];
@@ -483,7 +516,10 @@ class _PosBillingPageState extends State<PosBillingPage> {
                       // Left Section (65% width): Cart & Book Catalog
                       Expanded(
                         flex: 65,
-                        child: _buildLeftCartSection(books, isCreating),
+                        child: _buildLeftCartSection(
+                          state is SalesLoaded ? state : null,
+                          isCreating,
+                        ),
                       ),
                       const SizedBox(width: 16),
 
@@ -644,7 +680,7 @@ class _PosBillingPageState extends State<PosBillingPage> {
   // ==========================================
   // Left Cart & Search Section
   // ==========================================
-  Widget _buildLeftCartSection(List<Book> allBooks, bool isCreating) {
+  Widget _buildLeftCartSection(SalesLoaded? loadedState, bool isCreating) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -662,7 +698,7 @@ class _PosBillingPageState extends State<PosBillingPage> {
                       focusNode: _searchFocusNode,
                       decoration: InputDecoration(
                         hintText:
-                            'Scan Barcode / Enter ISBN or Title (Press Enter to add to cart)...',
+                            'Scan Barcode / Enter ISBN, Title, Author, or Publisher...',
                         hintStyle: AppTextStyles.bodyMedium.copyWith(
                           color: AppColors.textMuted,
                         ),
@@ -675,10 +711,9 @@ class _PosBillingPageState extends State<PosBillingPage> {
                                 icon: const Icon(Icons.clear_rounded, size: 18),
                                 onPressed: () {
                                   _searchController.clear();
-                                  setState(() {
-                                    _matchingBooks = [];
-                                    _isSearching = false;
-                                  });
+                                  context
+                                      .read<SalesBloc>()
+                                      .add(const ClearPosBookSearch());
                                 },
                               )
                             : null,
@@ -702,131 +737,322 @@ class _PosBillingPageState extends State<PosBillingPage> {
                           ),
                         ),
                       ),
-                      onChanged: (val) => _onSearchQueryChanged(val, allBooks),
-                      onSubmitted: (val) => _onSearchSubmitted(val, allBooks),
+                      onChanged: _onSearchQueryChanged,
+                      onSubmitted: (val) =>
+                          _onSearchSubmitted(val, loadedState),
                     ),
                   ),
                 ],
               ),
 
-              // Live Search Autocomplete Results
-              if (_isSearching && _matchingBooks.isNotEmpty) ...[
+              // Live Search Autocomplete Results & States
+              if (loadedState != null &&
+                  loadedState.posBookSearchQuery.isNotEmpty) ...[
                 const SizedBox(height: 10),
-                Container(
-                  constraints: const BoxConstraints(maxHeight: 220),
-                  decoration: BoxDecoration(
+                if (loadedState.isSearchingPosBooks)
+                  // 1. Loading State
+                  Material(
                     color: AppColors.surface,
                     borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: AppColors.neutral200),
-                    boxShadow: const [
-                      BoxShadow(
-                        color: Color(0x15000000),
-                        blurRadius: 10,
-                        offset: Offset(0, 4),
+                    child: Container(
+                      height: 70,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: AppColors.neutral200),
                       ),
-                    ],
-                  ),
-                  child: ListView.separated(
-                    shrinkWrap: true,
-                    itemCount: _matchingBooks.length,
-                    separatorBuilder: (context, index) =>
-                        const Divider(height: 1, color: AppColors.neutral100),
-                    itemBuilder: (context, index) {
-                      final book = _matchingBooks[index];
-                      final price = _saleTier == PosSaleTier.retail
-                          ? book.retailPrice
-                          : book.wholesalePrice;
-                      final isLow = book.stockQuantity <= book.minimumStock;
+                      child: const Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: AppColors.primary,
+                            ),
+                          ),
+                          SizedBox(width: 12),
+                          Text(
+                            'Searching bookstore catalog in database...',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: AppColors.textSecondary,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                else if (loadedState.posSearchError != null)
+                  // 2. Error State
+                  Material(
+                    color: AppColors.errorLight,
+                    borderRadius: BorderRadius.circular(8),
+                    child: Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: AppColors.error.withValues(alpha: 0.3),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.error_outline_rounded,
+                            color: AppColors.errorText,
+                            size: 20,
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              loadedState.posSearchError!,
+                              style: const TextStyle(
+                                color: AppColors.errorText,
+                                fontSize: 13,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                else if (loadedState.posSearchResults.isEmpty)
+                  // 3. Empty State
+                  Material(
+                    color: AppColors.surface,
+                    borderRadius: BorderRadius.circular(8),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        vertical: 16,
+                        horizontal: 16,
+                      ),
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: AppColors.neutral200),
+                      ),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(
+                            Icons.search_off_rounded,
+                            size: 32,
+                            color: AppColors.textMuted,
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            'No books found matching "${loadedState.posBookSearchQuery}"',
+                            style: AppTextStyles.bodyMedium.copyWith(
+                              fontWeight: FontWeight.w600,
+                              color: AppColors.textPrimary,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            'Search by Book Title, ISBN, Barcode, Author, or Publisher.',
+                            style: AppTextStyles.caption.copyWith(
+                              color: AppColors.textSecondary,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                else
+                  // 4. Results List
+                  Material(
+                    color: AppColors.surface,
+                    borderRadius: BorderRadius.circular(8),
+                    elevation: 2,
+                    shadowColor: const Color(0x15000000),
+                    child: Container(
+                      constraints: const BoxConstraints(maxHeight: 160),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: AppColors.neutral200),
+                      ),
+                      child: ListView.separated(
+                        shrinkWrap: true,
+                        itemCount: loadedState.posSearchResults.length,
+                        separatorBuilder: (context, index) =>
+                            const Divider(height: 1, color: AppColors.neutral100),
+                        itemBuilder: (context, index) {
+                          final book = loadedState.posSearchResults[index];
+                          final price = _saleTier == PosSaleTier.retail
+                              ? book.retailPrice
+                              : book.wholesalePrice;
+                          final isOutOfStock = book.stockQuantity <= 0;
+                          final isLow = !isOutOfStock &&
+                              book.stockQuantity <= book.minimumStock;
 
-                      return ListTile(
-                        dense: true,
-                        leading: CircleAvatar(
-                          radius: 16,
-                          backgroundColor: AppColors.primary.withValues(
-                            alpha: 0.1,
-                          ),
-                          child: const Icon(
-                            Icons.menu_book_rounded,
-                            size: 16,
-                            color: AppColors.primary,
-                          ),
-                        ),
-                        title: Text(
-                          book.name,
-                          style: AppTextStyles.bodyMedium.copyWith(
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        subtitle: Text(
-                          'ISBN: ${book.isbn ?? "--"} • Author: ${book.author ?? "Unknown"}',
-                          style: AppTextStyles.caption.copyWith(
-                            color: AppColors.textSecondary,
-                          ),
-                        ),
-                        trailing: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 3,
-                              ),
-                              decoration: BoxDecoration(
-                                color: isLow
-                                    ? AppColors.warningLight
-                                    : AppColors.neutral100,
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                              child: Text(
-                                'Stock: ${book.stockQuantity}',
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w700,
-                                  color: isLow
-                                      ? AppColors.warningText
-                                      : AppColors.neutral700,
+                          return Material(
+                            color: Colors.transparent,
+                            child: ListTile(
+                              dense: true,
+                              leading: CircleAvatar(
+                                radius: 16,
+                                backgroundColor: isOutOfStock
+                                    ? AppColors.neutral200
+                                    : AppColors.primary.withValues(alpha: 0.1),
+                                child: Icon(
+                                  Icons.menu_book_rounded,
+                                  size: 16,
+                                  color: isOutOfStock
+                                      ? AppColors.neutral500
+                                      : AppColors.primary,
                                 ),
                               ),
-                            ),
-                            const SizedBox(width: 12),
-                            Text(
-                              'Rs. ${price.toStringAsFixed(2)}',
-                              style: AppTextStyles.bodyMedium.copyWith(
-                                fontWeight: FontWeight.w700,
-                                color: AppColors.primary,
+                              title: Text(
+                                book.name,
+                                style: AppTextStyles.bodyMedium.copyWith(
+                                  fontWeight: FontWeight.w600,
+                                  color: isOutOfStock
+                                      ? AppColors.textSecondary
+                                      : AppColors.textPrimary,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
                               ),
-                            ),
-                            const SizedBox(width: 8),
-                            IconButton(
-                              icon: const Icon(
-                                Icons.add_circle_rounded,
-                                color: AppColors.primary,
+                              subtitle: Text(
+                                'ISBN: ${book.isbn ?? "--"} • Auth: ${book.author ?? "Unknown"} • Pub: ${book.publisher ?? "--"}',
+                                style: AppTextStyles.caption.copyWith(
+                                  color: AppColors.textSecondary,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
                               ),
-                              onPressed: () {
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    crossAxisAlignment: CrossAxisAlignment.end,
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Text(
+                                        'Rs. ${price.toStringAsFixed(2)}',
+                                        style: AppTextStyles.bodySmall.copyWith(
+                                          fontWeight: FontWeight.w700,
+                                          color: isOutOfStock
+                                              ? AppColors.neutral500
+                                              : AppColors.primary,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      if (isOutOfStock)
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 6,
+                                            vertical: 1,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: AppColors.errorLight,
+                                            borderRadius:
+                                                BorderRadius.circular(4),
+                                            border: Border.all(
+                                              color: AppColors.error
+                                                  .withValues(alpha: 0.3),
+                                            ),
+                                          ),
+                                          child: const Text(
+                                            'OUT OF STOCK',
+                                            style: TextStyle(
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.w700,
+                                              color: AppColors.errorText,
+                                            ),
+                                          ),
+                                        )
+                                      else
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 6,
+                                            vertical: 1,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: isLow
+                                                ? AppColors.warningLight
+                                                : AppColors.neutral100,
+                                            borderRadius:
+                                                BorderRadius.circular(4),
+                                          ),
+                                          child: Text(
+                                            isLow
+                                                ? 'Low: ${book.stockQuantity}'
+                                                : 'Stock: ${book.stockQuantity}',
+                                            style: TextStyle(
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.w700,
+                                              color: isLow
+                                                  ? AppColors.warningText
+                                                  : AppColors.neutral700,
+                                            ),
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                  const SizedBox(width: 4),
+                                  IconButton(
+                                    icon: Icon(
+                                      isOutOfStock
+                                          ? Icons.block_rounded
+                                          : Icons.add_circle_rounded,
+                                      size: 20,
+                                      color: isOutOfStock
+                                          ? AppColors.neutral400
+                                          : AppColors.primary,
+                                    ),
+                                    tooltip: isOutOfStock
+                                        ? 'Out of Stock'
+                                        : 'Add to Cart',
+                                    splashRadius: 18,
+                                    constraints: const BoxConstraints(
+                                      minWidth: 32,
+                                      minHeight: 32,
+                                    ),
+                                    padding: EdgeInsets.zero,
+                                    onPressed: () {
+                                      if (isOutOfStock) {
+                                        _showSnackbar(
+                                          'Cannot add "${book.name}": Book is currently OUT OF STOCK (0 available in warehouse).',
+                                          isError: true,
+                                        );
+                                        return;
+                                      }
+                                      _addBookToCart(book);
+                                      _searchController.clear();
+                                      context
+                                          .read<SalesBloc>()
+                                          .add(const ClearPosBookSearch());
+                                      _searchFocusNode.requestFocus();
+                                    },
+                                  ),
+                                ],
+                              ),
+                              onTap: () {
+                                if (isOutOfStock) {
+                                  _showSnackbar(
+                                    'Cannot add "${book.name}": Book is currently OUT OF STOCK (0 available in warehouse).',
+                                    isError: true,
+                                  );
+                                  return;
+                                }
                                 _addBookToCart(book);
                                 _searchController.clear();
-                                setState(() {
-                                  _matchingBooks = [];
-                                  _isSearching = false;
-                                });
+                                context
+                                    .read<SalesBloc>()
+                                    .add(const ClearPosBookSearch());
                                 _searchFocusNode.requestFocus();
                               },
                             ),
-                          ],
-                        ),
-                        onTap: () {
-                          _addBookToCart(book);
-                          _searchController.clear();
-                          setState(() {
-                            _matchingBooks = [];
-                            _isSearching = false;
-                          });
-                          _searchFocusNode.requestFocus();
+                          );
                         },
-                      );
-                    },
+                      ),
+                    ),
                   ),
-                ),
               ],
             ],
           ),
@@ -836,6 +1062,7 @@ class _PosBillingPageState extends State<PosBillingPage> {
         // Active Cart Table
         Expanded(
           child: AppCard(
+            expand: true,
             padding: const EdgeInsets.all(16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -873,11 +1100,15 @@ class _PosBillingPageState extends State<PosBillingPage> {
 
                 Expanded(
                   child: _cartItems.isEmpty
-                      ? const EmptyState(
-                          icon: Icons.add_shopping_cart_rounded,
-                          title: 'Cart is Empty',
-                          message:
-                              'Scan a barcode or type title/ISBN above to begin billing.',
+                      ? const Center(
+                          child: SingleChildScrollView(
+                            child: EmptyState(
+                              icon: Icons.add_shopping_cart_rounded,
+                              title: 'Cart is Empty',
+                              message:
+                                  'Scan a barcode or type title/ISBN above to begin billing.',
+                            ),
+                          ),
                         )
                       : ListView.separated(
                           padding: const EdgeInsets.symmetric(vertical: 8),
@@ -951,34 +1182,44 @@ class _PosBillingPageState extends State<PosBillingPage> {
                 const SizedBox(height: 2),
                 Row(
                   children: [
-                    Text(
-                      'ISBN: ${item.book.isbn ?? "--"}',
-                      style: AppTextStyles.caption.copyWith(
-                        color: AppColors.textSecondary,
+                    Flexible(
+                      fit: FlexFit.loose,
+                      child: Text(
+                        'ISBN: ${item.book.isbn ?? "--"}',
+                        style: AppTextStyles.caption.copyWith(
+                          color: AppColors.textSecondary,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                    const SizedBox(width: 8),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 6,
-                        vertical: 1,
-                      ),
-                      decoration: BoxDecoration(
-                        color: isExceeded
-                            ? AppColors.errorLight
-                            : AppColors.neutral100,
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      child: Text(
-                        isExceeded
-                            ? 'Stock: ${item.book.stockQuantity} (EXCEEDED)'
-                            : 'Stock: ${item.book.stockQuantity}',
-                        style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w700,
+                    const SizedBox(width: 6),
+                    Flexible(
+                      fit: FlexFit.loose,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 5,
+                          vertical: 1,
+                        ),
+                        decoration: BoxDecoration(
                           color: isExceeded
-                              ? AppColors.errorText
-                              : AppColors.neutral700,
+                              ? AppColors.errorLight
+                              : AppColors.neutral100,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          isExceeded
+                              ? 'Stock: ${item.book.stockQuantity} (EXCEEDED)'
+                              : 'Stock: ${item.book.stockQuantity}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                            color: isExceeded
+                                ? AppColors.errorText
+                                : AppColors.neutral700,
+                          ),
                         ),
                       ),
                     ),
@@ -990,7 +1231,7 @@ class _PosBillingPageState extends State<PosBillingPage> {
 
           // Selling Price (Editable)
           SizedBox(
-            width: 90,
+            width: 82,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -1012,7 +1253,7 @@ class _PosBillingPageState extends State<PosBillingPage> {
                   decoration: const InputDecoration(
                     isDense: true,
                     contentPadding: EdgeInsets.symmetric(
-                      horizontal: 8,
+                      horizontal: 6,
                       vertical: 8,
                     ),
                     border: OutlineInputBorder(),
@@ -1028,11 +1269,11 @@ class _PosBillingPageState extends State<PosBillingPage> {
               ],
             ),
           ),
-          const SizedBox(width: 10),
+          const SizedBox(width: 8),
 
           // Quantity Increment/Decrement
           SizedBox(
-            width: 120,
+            width: 96,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
@@ -1063,7 +1304,7 @@ class _PosBillingPageState extends State<PosBillingPage> {
                     ),
                     const SizedBox(width: 4),
                     SizedBox(
-                      width: 42,
+                      width: 40,
                       child: TextFormField(
                         key: ValueKey('qty_${item.book.id}_${item.quantity}'),
                         initialValue: item.quantity.toString(),
@@ -1075,7 +1316,7 @@ class _PosBillingPageState extends State<PosBillingPage> {
                         decoration: const InputDecoration(
                           isDense: true,
                           contentPadding: EdgeInsets.symmetric(
-                            horizontal: 4,
+                            horizontal: 2,
                             vertical: 8,
                           ),
                           border: OutlineInputBorder(),
@@ -1105,11 +1346,11 @@ class _PosBillingPageState extends State<PosBillingPage> {
               ],
             ),
           ),
-          const SizedBox(width: 10),
+          const SizedBox(width: 8),
 
           // Line Discount ($)
           SizedBox(
-            width: 80,
+            width: 72,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -1131,7 +1372,7 @@ class _PosBillingPageState extends State<PosBillingPage> {
                   decoration: const InputDecoration(
                     isDense: true,
                     contentPadding: EdgeInsets.symmetric(
-                      horizontal: 8,
+                      horizontal: 6,
                       vertical: 8,
                     ),
                     border: OutlineInputBorder(),
@@ -1147,11 +1388,11 @@ class _PosBillingPageState extends State<PosBillingPage> {
               ],
             ),
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 8),
 
           // Net Line Total
           SizedBox(
-            width: 90,
+            width: 82,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
@@ -1172,7 +1413,7 @@ class _PosBillingPageState extends State<PosBillingPage> {
               ],
             ),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: 6),
 
           // Remove Button
           IconButton(
@@ -1181,6 +1422,8 @@ class _PosBillingPageState extends State<PosBillingPage> {
               size: 18,
               color: AppColors.error,
             ),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
             splashRadius: 16,
             onPressed: () => _removeCartItem(index),
           ),
@@ -1243,17 +1486,42 @@ class _PosBillingPageState extends State<PosBillingPage> {
                   children: [
                     Expanded(
                       child: ChoiceChip(
-                        label: const Row(
+                        showCheckmark: false,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 4,
+                          vertical: 4,
+                        ),
+                        labelPadding: EdgeInsets.zero,
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        visualDensity: VisualDensity.compact,
+                        label: Row(
                           mainAxisAlignment: MainAxisAlignment.center,
+                          mainAxisSize: MainAxisSize.min,
                           children: [
-                            Icon(Icons.person_outline_rounded, size: 16),
-                            SizedBox(width: 6),
-                            Text('Walk-in Cash'),
+                            const Icon(Icons.person_outline_rounded, size: 15),
+                            const SizedBox(width: 4),
+                            Flexible(
+                              child: Text(
+                                'Walk-in Cash',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: _isWalkIn
+                                      ? AppColors.primary
+                                      : AppColors.textSecondary,
+                                  fontWeight: _isWalkIn
+                                      ? FontWeight.w700
+                                      : FontWeight.w500,
+                                ),
+                              ),
+                            ),
                           ],
                         ),
                         selected: _isWalkIn,
                         selectedColor: AppColors.primaryContainer,
                         labelStyle: TextStyle(
+                          fontSize: 12,
                           color: _isWalkIn
                               ? AppColors.primary
                               : AppColors.textSecondary,
@@ -1272,17 +1540,42 @@ class _PosBillingPageState extends State<PosBillingPage> {
                     const SizedBox(width: 8),
                     Expanded(
                       child: ChoiceChip(
-                        label: const Row(
+                        showCheckmark: false,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 4,
+                          vertical: 4,
+                        ),
+                        labelPadding: EdgeInsets.zero,
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        visualDensity: VisualDensity.compact,
+                        label: Row(
                           mainAxisAlignment: MainAxisAlignment.center,
+                          mainAxisSize: MainAxisSize.min,
                           children: [
-                            Icon(Icons.account_box_outlined, size: 16),
-                            SizedBox(width: 6),
-                            Text('Registered Client'),
+                            const Icon(Icons.account_box_outlined, size: 15),
+                            const SizedBox(width: 4),
+                            Flexible(
+                              child: Text(
+                                'Registered Client',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: !_isWalkIn
+                                      ? AppColors.secondary
+                                      : AppColors.textSecondary,
+                                  fontWeight: !_isWalkIn
+                                      ? FontWeight.w700
+                                      : FontWeight.w500,
+                                ),
+                              ),
+                            ),
                           ],
                         ),
                         selected: !_isWalkIn,
                         selectedColor: AppColors.secondaryContainer,
                         labelStyle: TextStyle(
+                          fontSize: 12,
                           color: !_isWalkIn
                               ? AppColors.secondary
                               : AppColors.textSecondary,
@@ -1641,14 +1934,19 @@ class _PosBillingPageState extends State<PosBillingPage> {
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            const Text(
-              'PAYMENT STATUS: PAID',
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w700,
-                color: AppColors.successText,
+            const Flexible(
+              child: Text(
+                'PAYMENT STATUS: PAID',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.successText,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
             ),
+            const SizedBox(width: 8),
             Text(
               change > 0
                   ? 'Change: Rs. ${change.toStringAsFixed(2)}'
@@ -1673,14 +1971,19 @@ class _PosBillingPageState extends State<PosBillingPage> {
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            const Text(
-              'STATUS: PARTIAL PAYMENT',
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w700,
-                color: AppColors.warningText,
+            const Flexible(
+              child: Text(
+                'STATUS: PARTIAL PAYMENT',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.warningText,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
             ),
+            const SizedBox(width: 8),
             Text(
               'Due: Rs. ${remaining.toStringAsFixed(2)}',
               style: const TextStyle(
@@ -1703,14 +2006,19 @@ class _PosBillingPageState extends State<PosBillingPage> {
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            const Text(
-              'STATUS: UNPAID (CREDIT)',
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w700,
-                color: AppColors.errorText,
+            const Flexible(
+              child: Text(
+                'STATUS: UNPAID (CREDIT)',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.errorText,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
             ),
+            const SizedBox(width: 8),
             Text(
               'Credit: Rs. ${remaining.toStringAsFixed(2)}',
               style: const TextStyle(

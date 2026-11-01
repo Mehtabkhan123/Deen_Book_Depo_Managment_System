@@ -62,6 +62,15 @@ class ClearSaleMessages extends SalesEvent {
   const ClearSaleMessages();
 }
 
+class SearchPosBooks extends SalesEvent {
+  final String query;
+  const SearchPosBooks(this.query);
+}
+
+class ClearPosBookSearch extends SalesEvent {
+  const ClearPosBookSearch();
+}
+
 // ==========================================
 // States
 // ==========================================
@@ -92,6 +101,10 @@ class SalesLoaded extends SalesState {
   final bool isDeleting;
   final String? successMessage;
   final String? errorMessage;
+  final List<Book> posSearchResults;
+  final bool isSearchingPosBooks;
+  final String? posSearchError;
+  final String posBookSearchQuery;
 
   const SalesLoaded({
     required this.sales,
@@ -108,6 +121,10 @@ class SalesLoaded extends SalesState {
     this.isDeleting = false,
     this.successMessage,
     this.errorMessage,
+    this.posSearchResults = const [],
+    this.isSearchingPosBooks = false,
+    this.posSearchError,
+    this.posBookSearchQuery = '',
   });
 
   String getCustomerName(int? customerId) {
@@ -156,6 +173,11 @@ class SalesLoaded extends SalesState {
     bool clearSuccess = false,
     String? errorMessage,
     bool clearError = false,
+    List<Book>? posSearchResults,
+    bool? isSearchingPosBooks,
+    String? posSearchError,
+    bool clearPosSearchError = false,
+    String? posBookSearchQuery,
   }) {
     return SalesLoaded(
       sales: sales ?? this.sales,
@@ -179,6 +201,12 @@ class SalesLoaded extends SalesState {
       successMessage:
           clearSuccess ? null : (successMessage ?? this.successMessage),
       errorMessage: clearError ? null : (errorMessage ?? this.errorMessage),
+      posSearchResults: posSearchResults ?? this.posSearchResults,
+      isSearchingPosBooks: isSearchingPosBooks ?? this.isSearchingPosBooks,
+      posSearchError: clearPosSearchError
+          ? null
+          : (posSearchError ?? this.posSearchError),
+      posBookSearchQuery: posBookSearchQuery ?? this.posBookSearchQuery,
     );
   }
 }
@@ -209,6 +237,8 @@ class SalesBloc extends Bloc<SalesEvent, SalesState> {
     on<CreateSale>(_onCreateSale);
     on<DeleteSale>(_onDeleteSale);
     on<ClearSaleMessages>(_onClearMessages);
+    on<SearchPosBooks>(_onSearchPosBooks);
+    on<ClearPosBookSearch>(_onClearPosBookSearch);
   }
 
   Future<Map<int, Customer>> _loadCustomers() async {
@@ -546,5 +576,90 @@ class SalesBloc extends Bloc<SalesEvent, SalesState> {
     if (state is! SalesLoaded) return;
     final current = state as SalesLoaded;
     emit(current.copyWith(clearSuccess: true, clearError: true));
+  }
+
+  Future<void> _onSearchPosBooks(
+    SearchPosBooks event,
+    Emitter<SalesState> emit,
+  ) async {
+    final trimmed = event.query.trim();
+
+    if (state is! SalesLoaded) {
+      if (trimmed.isEmpty) return;
+      try {
+        final results = await bookRepository.search(trimmed);
+        final customers = await _loadCustomers();
+        final sales = await saleRepository.getAll();
+        final books = await _loadBooks();
+        emit(SalesLoaded(
+          sales: sales,
+          filteredSales: sales,
+          customers: customers,
+          books: books,
+          posSearchResults: results,
+          isSearchingPosBooks: false,
+          posBookSearchQuery: trimmed,
+        ));
+      } catch (e) {
+        emit(SalesError('Failed to search books: $e'));
+      }
+      return;
+    }
+
+    final current = state as SalesLoaded;
+
+    if (trimmed.isEmpty) {
+      emit(current.copyWith(
+        posSearchResults: const [],
+        isSearchingPosBooks: false,
+        posBookSearchQuery: '',
+        clearPosSearchError: true,
+      ));
+      return;
+    }
+
+    emit(current.copyWith(
+      isSearchingPosBooks: true,
+      posBookSearchQuery: trimmed,
+      clearPosSearchError: true,
+    ));
+
+    try {
+      final results = await bookRepository.search(trimmed);
+      final updatedBooks = Map<int, Book>.from(current.books);
+      for (final b in results) {
+        if (b.id != null) {
+          updatedBooks[b.id!] = b;
+        }
+      }
+
+      emit(current.copyWith(
+        books: updatedBooks,
+        posSearchResults: results,
+        isSearchingPosBooks: false,
+        posBookSearchQuery: trimmed,
+        clearPosSearchError: true,
+      ));
+    } catch (e) {
+      emit(current.copyWith(
+        isSearchingPosBooks: false,
+        posSearchError: 'Failed to search books: $e',
+        posSearchResults: const [],
+      ));
+    }
+  }
+
+  void _onClearPosBookSearch(
+    ClearPosBookSearch event,
+    Emitter<SalesState> emit,
+  ) {
+    if (state is! SalesLoaded) return;
+    final current = state as SalesLoaded;
+    emit(current.copyWith(
+      posSearchResults: const [],
+      isSearchingPosBooks: false,
+      posBookSearchQuery: '',
+      clearPosSearchError: true,
+    ));
   }
 }

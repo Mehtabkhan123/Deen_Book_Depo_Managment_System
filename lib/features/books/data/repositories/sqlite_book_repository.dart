@@ -141,13 +141,17 @@ class SqliteBookRepository implements BookRepository {
     if (trimmed.isEmpty) return getAll();
 
     final term = '%$trimmed%';
+    final cleanQuery = trimmed.replaceAll('-', '').replaceAll(' ', '');
+    final cleanTerm = '%$cleanQuery%';
+
     final results = await _dbHelper.query(
       DbConstants.tableBooks,
-      where: '${DbConstants.colBookName} LIKE ? OR '
-          '${DbConstants.colBookIsbn} LIKE ? OR '
-          '${DbConstants.colBookAuthor} LIKE ? OR '
-          '${DbConstants.colBookPublisher} LIKE ?',
-      whereArgs: [term, term, term, term],
+      where: 'LOWER(${DbConstants.colBookName}) LIKE LOWER(?) OR '
+          'LOWER(${DbConstants.colBookIsbn}) LIKE LOWER(?) OR '
+          "REPLACE(REPLACE(LOWER(${DbConstants.colBookIsbn}), '-', ''), ' ', '') LIKE LOWER(?) OR "
+          'LOWER(${DbConstants.colBookAuthor}) LIKE LOWER(?) OR '
+          'LOWER(${DbConstants.colBookPublisher}) LIKE LOWER(?)',
+      whereArgs: [term, term, cleanTerm, term, term],
       orderBy: '${DbConstants.colBookName} ASC',
     );
     return results.map((row) => Book.fromMap(row)).toList();
@@ -189,16 +193,20 @@ class SqliteBookRepository implements BookRepository {
     }
 
     final term = '%$trimmed%';
-    final searchClause = '(${DbConstants.colBookName} LIKE ? OR '
-        '${DbConstants.colBookIsbn} LIKE ? OR '
-        '${DbConstants.colBookAuthor} LIKE ? OR '
-        '${DbConstants.colBookPublisher} LIKE ?)';
+    final cleanQuery = trimmed.replaceAll('-', '').replaceAll(' ', '');
+    final cleanTerm = '%$cleanQuery%';
+
+    final searchClause = '(LOWER(${DbConstants.colBookName}) LIKE LOWER(?) OR '
+        'LOWER(${DbConstants.colBookIsbn}) LIKE LOWER(?) OR '
+        "REPLACE(REPLACE(LOWER(${DbConstants.colBookIsbn}), '-', ''), ' ', '') LIKE LOWER(?) OR "
+        'LOWER(${DbConstants.colBookAuthor}) LIKE LOWER(?) OR '
+        'LOWER(${DbConstants.colBookPublisher}) LIKE LOWER(?))';
 
     if (hasCategory) {
       final results = await _dbHelper.query(
         DbConstants.tableBooks,
         where: '${DbConstants.colBookCategoryId} = ? AND $searchClause',
-        whereArgs: [categoryId, term, term, term, term],
+        whereArgs: [categoryId, term, term, cleanTerm, term, term],
         orderBy: '${DbConstants.colBookName} ASC',
       );
       return results.map((row) => Book.fromMap(row)).toList();
@@ -206,7 +214,7 @@ class SqliteBookRepository implements BookRepository {
       final results = await _dbHelper.query(
         DbConstants.tableBooks,
         where: searchClause,
-        whereArgs: [term, term, term, term],
+        whereArgs: [term, term, cleanTerm, term, term],
         orderBy: '${DbConstants.colBookName} ASC',
       );
       return results.map((row) => Book.fromMap(row)).toList();
