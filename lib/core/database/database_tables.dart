@@ -132,6 +132,8 @@ class DatabaseTables {
       CREATE TABLE IF NOT EXISTS ${DbConstants.tableSales} (
         ${DbConstants.colId} INTEGER PRIMARY KEY AUTOINCREMENT,
         ${DbConstants.colSaleCustomerId} INTEGER,
+        ${DbConstants.colSaleCustomerName} TEXT,
+        ${DbConstants.colSaleCustomerPhone} TEXT,
         ${DbConstants.colSaleInvoiceNumber} TEXT NOT NULL UNIQUE,
         ${DbConstants.colSaleDate} TEXT NOT NULL,
         ${DbConstants.colSaleSubtotal} REAL NOT NULL DEFAULT 0,
@@ -394,6 +396,22 @@ class DatabaseTables {
 
       // Recreate all tables with canonical schema
       await createAllTables(db);
+    }
+  }
+
+  /// Ensures that the customer snapshot columns exist on the sales table
+  static Future<void> ensureSalesCustomerColumns(DatabaseExecutor db) async {
+    try {
+      final info = await db.rawQuery('PRAGMA table_info(${DbConstants.tableSales});');
+      final existingCols = info.map((r) => r['name'] as String).toSet();
+      if (!existingCols.contains(DbConstants.colSaleCustomerName)) {
+        await db.execute('ALTER TABLE ${DbConstants.tableSales} ADD COLUMN ${DbConstants.colSaleCustomerName} TEXT;');
+      }
+      if (!existingCols.contains(DbConstants.colSaleCustomerPhone)) {
+        await db.execute('ALTER TABLE ${DbConstants.tableSales} ADD COLUMN ${DbConstants.colSaleCustomerPhone} TEXT;');
+      }
+    } catch (_) {
+      // Ignored if table doesn't exist yet (e.g. before onCreate)
     }
   }
 }

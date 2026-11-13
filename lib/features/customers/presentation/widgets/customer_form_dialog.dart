@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/app_text_styles.dart';
+import '../../../../core/utils/phone_validator.dart';
 import '../../../../shared/models/customer.dart';
 import '../../../../shared/widgets/app_button.dart';
 import '../../../../shared/widgets/app_text_field.dart';
@@ -8,17 +9,20 @@ import '../../../../shared/widgets/app_text_field.dart';
 /// Professional Windows Desktop dialog for creating and editing customer accounts
 class CustomerFormDialog extends StatefulWidget {
   final Customer? customer;
+  final bool requirePhone;
   final ValueChanged<Customer> onSave;
 
   const CustomerFormDialog({
     super.key,
     this.customer,
+    this.requirePhone = false,
     required this.onSave,
   });
 
   static Future<void> show(
     BuildContext context, {
     Customer? customer,
+    bool requirePhone = false,
     required ValueChanged<Customer> onSave,
   }) {
     return showDialog(
@@ -26,6 +30,7 @@ class CustomerFormDialog extends StatefulWidget {
       barrierDismissible: false,
       builder: (ctx) => CustomerFormDialog(
         customer: customer,
+        requirePhone: requirePhone,
         onSave: onSave,
       ),
     );
@@ -187,10 +192,21 @@ class _CustomerFormDialogState extends State<CustomerFormDialog> {
                           children: [
                             Expanded(
                               child: AppTextField(
-                                label: 'Phone Number',
+                                label: widget.requirePhone ? 'Phone Number *' : 'Phone Number',
                                 hint: 'e.g. 0300-1234567',
                                 controller: _phoneController,
                                 keyboardType: TextInputType.phone,
+                                validator: (val) {
+                                  if (widget.requirePhone) {
+                                    return PhoneValidator.validate(val);
+                                  }
+                                  if (val != null && val.trim().isNotEmpty) {
+                                    if (!PhoneValidator.isValid(val)) {
+                                      return 'Enter a valid phone number (7-15 digits)';
+                                    }
+                                  }
+                                  return null;
+                                },
                               ),
                             ),
                             const SizedBox(width: 16),

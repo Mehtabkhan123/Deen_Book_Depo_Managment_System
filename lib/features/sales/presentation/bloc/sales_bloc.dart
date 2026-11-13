@@ -62,6 +62,10 @@ class ClearSaleMessages extends SalesEvent {
   const ClearSaleMessages();
 }
 
+class ClearLastCreatedSale extends SalesEvent {
+  const ClearLastCreatedSale();
+}
+
 class SearchPosBooks extends SalesEvent {
   final String query;
   const SearchPosBooks(this.query);
@@ -97,6 +101,8 @@ class SalesLoaded extends SalesState {
   final bool isCashOnlyFilter;
   final Sale? selectedSale;
   final List<SaleItem>? selectedSaleItems;
+  final Sale? lastCreatedSale;
+  final List<SaleItem>? lastCreatedSaleItems;
   final bool isCreating;
   final bool isDeleting;
   final String? successMessage;
@@ -117,6 +123,8 @@ class SalesLoaded extends SalesState {
     this.isCashOnlyFilter = false,
     this.selectedSale,
     this.selectedSaleItems,
+    this.lastCreatedSale,
+    this.lastCreatedSaleItems,
     this.isCreating = false,
     this.isDeleting = false,
     this.successMessage,
@@ -167,6 +175,10 @@ class SalesLoaded extends SalesState {
     bool clearSelectedSale = false,
     List<SaleItem>? selectedSaleItems,
     bool clearSelectedItems = false,
+    Sale? lastCreatedSale,
+    bool clearLastCreatedSale = false,
+    List<SaleItem>? lastCreatedSaleItems,
+    bool clearLastCreatedSaleItems = false,
     bool? isCreating,
     bool? isDeleting,
     String? successMessage,
@@ -196,6 +208,12 @@ class SalesLoaded extends SalesState {
       selectedSaleItems: clearSelectedItems
           ? null
           : (selectedSaleItems ?? this.selectedSaleItems),
+      lastCreatedSale: clearLastCreatedSale
+          ? null
+          : (lastCreatedSale ?? this.lastCreatedSale),
+      lastCreatedSaleItems: clearLastCreatedSaleItems
+          ? null
+          : (lastCreatedSaleItems ?? this.lastCreatedSaleItems),
       isCreating: isCreating ?? this.isCreating,
       isDeleting: isDeleting ?? this.isDeleting,
       successMessage:
@@ -237,6 +255,7 @@ class SalesBloc extends Bloc<SalesEvent, SalesState> {
     on<CreateSale>(_onCreateSale);
     on<DeleteSale>(_onDeleteSale);
     on<ClearSaleMessages>(_onClearMessages);
+    on<ClearLastCreatedSale>(_onClearLastCreatedSale);
     on<SearchPosBooks>(_onSearchPosBooks);
     on<ClearPosBookSearch>(_onClearPosBookSearch);
   }
@@ -486,12 +505,18 @@ class SalesBloc extends Bloc<SalesEvent, SalesState> {
           ? 'Cash / Walk-in'
           : (updatedCustomers[event.sale.customerId]?.name ?? 'Customer');
 
+      final savedSale = event.sale.copyWith(id: saleId);
+      final savedItems =
+          event.items.map((i) => i.copyWith(saleId: saleId)).toList();
+
       emit(current.copyWith(
         sales: updatedSales,
         filteredSales: filtered,
         customers: updatedCustomers,
         books: updatedBooks,
         isCreating: false,
+        lastCreatedSale: savedSale,
+        lastCreatedSaleItems: savedItems,
         successMessage:
             'Sale #${event.sale.invoiceNumber} for $customerLabel created successfully (ID: $saleId).',
       ));
@@ -576,6 +601,18 @@ class SalesBloc extends Bloc<SalesEvent, SalesState> {
     if (state is! SalesLoaded) return;
     final current = state as SalesLoaded;
     emit(current.copyWith(clearSuccess: true, clearError: true));
+  }
+
+  void _onClearLastCreatedSale(
+    ClearLastCreatedSale event,
+    Emitter<SalesState> emit,
+  ) {
+    if (state is! SalesLoaded) return;
+    final current = state as SalesLoaded;
+    emit(current.copyWith(
+      clearLastCreatedSale: true,
+      clearLastCreatedSaleItems: true,
+    ));
   }
 
   Future<void> _onSearchPosBooks(

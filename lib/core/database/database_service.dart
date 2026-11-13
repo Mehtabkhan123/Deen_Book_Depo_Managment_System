@@ -86,7 +86,8 @@ class DatabaseService {
           onConfigure: _onConfigure,
           onCreate: _onCreate,
           onUpgrade: _onUpgrade,
-          onOpen: (db) {
+          onOpen: (db) async {
+            await DatabaseTables.ensureSalesCustomerColumns(db);
             AppLogger.success('Database opened successfully: $fullDbPath');
           },
         ),

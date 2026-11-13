@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
+import '../../../../core/di/injection.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/app_text_styles.dart';
+import '../../../../core/utils/phone_validator.dart';
+import '../../../customers/presentation/widgets/customer_form_dialog.dart';
 import '../../../../shared/models/book.dart';
 import '../../../../shared/models/customer.dart';
 import '../../../../shared/models/sale.dart';
@@ -50,7 +53,8 @@ class _SaleFormDialogState extends State<SaleFormDialog> {
   late final TextEditingController _invoiceController;
   late final TextEditingController _dateController;
   late final TextEditingController _notesController;
-  int? _selectedCustomerId; // null represents Cash / Walk-in Customer
+  int? _selectedCustomerId;
+  late List<Customer> _customers;
 
   // Item input controllers
   int? _selectedBookId;
@@ -68,6 +72,10 @@ class _SaleFormDialogState extends State<SaleFormDialog> {
   @override
   void initState() {
     super.initState();
+    _customers = List.of(widget.customers);
+    if (_customers.isNotEmpty) {
+      _selectedCustomerId = _customers.first.id;
+    }
     final now = DateTime.now();
     final dateStr =
         '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
@@ -83,6 +91,37 @@ class _SaleFormDialogState extends State<SaleFormDialog> {
     _itemDiscountController.addListener(_onMathChanged);
     _overallDiscountController.addListener(_onMathChanged);
     _paidAmountController.addListener(_onMathChanged);
+  }
+
+  Customer? get _selectedCustomer {
+    if (_selectedCustomerId == null) return null;
+    try {
+      return _customers.firstWhere((c) => c.id == _selectedCustomerId);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _openAddCustomerDialog() async {
+    await CustomerFormDialog.show(
+      context,
+      requirePhone: true,
+      onSave: (newCustomer) async {
+        try {
+          final repo = Injection.instance.customerRepository;
+          final createdId = await repo.create(newCustomer);
+          final created = await repo.getById(createdId);
+          if (created != null && mounted) {
+            setState(() {
+              _customers.add(created);
+              _selectedCustomerId = created.id;
+            });
+          }
+        } catch (e) {
+          if (mounted) _showWarning('Failed to register customer: $e');
+        }
+      },
+    );
   }
 
   @override
@@ -300,12 +339,32 @@ class _SaleFormDialogState extends State<SaleFormDialog> {
       return;
     }
 
+    final customer = _selectedCustomer;
+    if (customer == null) {
+      _showWarning('Please select a wholesale customer.');
+      return;
+    }
+    if (customer.name.trim().isEmpty) {
+      _showWarning('Customer name is required for wholesale bills.');
+      return;
+    }
+    if (customer.phone == null || customer.phone!.trim().isEmpty) {
+      _showWarning('Customer phone number is required for wholesale bills.');
+      return;
+    }
+    if (!PhoneValidator.isValid(customer.phone!)) {
+      _showWarning('Customer phone number "${customer.phone}" is invalid.');
+      return;
+    }
+
     final invoiceNumber = _invoiceController.text.trim();
     final saleDate = _dateController.text.trim();
     final notes = _notesController.text.trim();
 
     final sale = Sale(
-      customerId: _selectedCustomerId, // null if Cash / Walk-in
+      customerId: customer.id,
+      customerName: customer.name,
+      customerPhone: customer.phone,
       invoiceNumber: invoiceNumber,
       saleDate: saleDate,
       subtotal: subtotal,
@@ -411,41 +470,83 @@ class _SaleFormDialogState extends State<SaleFormDialog> {
                       Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          // Customer selector
+                          // Customer selector with Add Customer button
                           Expanded(
-                            flex: 4,
-                            child: AppDropdown<int?>(
-                              label: 'Customer Account / Sale Channel *',
-                              hint: 'Select customer or cash walk-in',
-                              value: _selectedCustomerId,
-                              items: [
-                                const DropdownMenuItem<int?>(
-                                  value: null,
-                                  child: Row(
-                                    children: [
-                                      Icon(Icons.person_outline_rounded, size: 16, color: AppColors.successText),
-                                      SizedBox(width: 6),
-                                      Expanded(
-                                        child: Text(
-                                          'Cash / Walk-in Customer (No Ledger)',
-                                          style: TextStyle(fontWeight: FontWeight.w700, color: AppColors.successText),
-                                          overflow: TextOverflow.ellipsis,
-                                        ),
+                            flex: 5,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  crossAxisAlignment: CrossAxisAlignment.end,
+                                  children: [
+                                    Expanded(
+                                      child: AppDropdown<int?>(
+                                        label: 'Wholesale Customer *',
+                                        hint: 'Select registered customer',
+                                        value: _selectedCustomerId,
+                                        items: _customers.map((c) {
+                                          return DropdownMenuItem<int?>(
+                                            value: c.id,
+                                            child: Text(
+                                              '${c.name} (${c.phone ?? "No Phone"})',
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                          );
+                                        }).toList(),
+                                        onChanged: (val) => setState(() => _selectedCustomerId = val),
                                       ),
-                                    ],
-                                  ),
-                                ),
-                                ...widget.customers.map((c) {
-                                  return DropdownMenuItem<int?>(
-                                    value: c.id,
-                                    child: Text(
-                                      '${c.name} (${c.phone ?? "--"})',
-                                      overflow: TextOverflow.ellipsis,
                                     ),
-                                  );
-                                }),
+                                    const SizedBox(width: 8),
+                                    IconButton(
+                                      icon: const Icon(Icons.person_add_alt_1_rounded),
+                                      tooltip: 'Add New Wholesale Customer',
+                                      style: IconButton.styleFrom(
+                                        backgroundColor: AppColors.primaryContainer,
+                                        foregroundColor: AppColors.primary,
+                                      ),
+                                      onPressed: _openAddCustomerDialog,
+                                    ),
+                                  ],
+                                ),
+                                if (_selectedCustomer != null) ...[
+                                  const SizedBox(height: 6),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                    decoration: BoxDecoration(
+                                      color: AppColors.neutral50,
+                                      borderRadius: BorderRadius.circular(6),
+                                      border: Border.all(
+                                        color: (_selectedCustomer!.phone == null ||
+                                                !PhoneValidator.isValid(_selectedCustomer!.phone!))
+                                            ? AppColors.error
+                                            : AppColors.neutral200,
+                                      ),
+                                    ),
+                                    child: Row(
+                                      children: [
+                                        const Icon(Icons.phone_outlined, size: 14, color: AppColors.neutral700),
+                                        const SizedBox(width: 6),
+                                        Expanded(
+                                          child: Text(
+                                            _selectedCustomer!.phone != null && _selectedCustomer!.phone!.isNotEmpty
+                                                ? 'Phone: ${_selectedCustomer!.phone!}'
+                                                : 'Phone number missing (Required for wholesale)',
+                                            style: TextStyle(
+                                              fontSize: 11,
+                                              fontWeight: FontWeight.w600,
+                                              color: _selectedCustomer!.phone != null &&
+                                                      PhoneValidator.isValid(_selectedCustomer!.phone!)
+                                                  ? AppColors.neutral700
+                                                  : AppColors.error,
+                                            ),
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
                               ],
-                              onChanged: (val) => setState(() => _selectedCustomerId = val),
                             ),
                           ),
                           const SizedBox(width: 14),

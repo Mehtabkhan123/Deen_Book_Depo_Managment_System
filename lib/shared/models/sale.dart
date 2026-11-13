@@ -4,6 +4,8 @@ import 'sale_item.dart';
 class Sale {
   final int? id;
   final int? customerId;
+  final String? customerName;
+  final String? customerPhone;
   final String invoiceNumber;
   final String saleDate;
   final double subtotal;
@@ -17,9 +19,14 @@ class Sale {
   final String? updatedAt;
   final List<SaleItem>? items;
 
+  /// Whether this invoice represents a wholesale transaction
+  bool get isWholesale => !invoiceNumber.trim().toUpperCase().startsWith('RET');
+
   const Sale({
     this.id,
     this.customerId,
+    this.customerName,
+    this.customerPhone,
     required this.invoiceNumber,
     required this.saleDate,
     this.subtotal = 0.0,
@@ -39,6 +46,8 @@ class Sale {
     return Sale(
       id: map['id'] as int?,
       customerId: map['customer_id'] as int?,
+      customerName: map['customer_name'] as String?,
+      customerPhone: map['customer_phone'] as String?,
       invoiceNumber: map['invoice_number'] as String,
       saleDate: map['sale_date'] as String,
       subtotal: (map['subtotal'] as num?)?.toDouble() ?? 0.0,
@@ -58,6 +67,8 @@ class Sale {
   Map<String, dynamic> toMap() {
     final map = <String, dynamic>{
       'customer_id': customerId,
+      'customer_name': customerName,
+      'customer_phone': customerPhone,
       'invoice_number': invoiceNumber,
       'sale_date': saleDate,
       'subtotal': subtotal,
@@ -80,6 +91,8 @@ class Sale {
   Sale copyWith({
     int? id,
     int? customerId,
+    String? customerName,
+    String? customerPhone,
     String? invoiceNumber,
     String? saleDate,
     double? subtotal,
@@ -96,6 +109,8 @@ class Sale {
     return Sale(
       id: id ?? this.id,
       customerId: customerId ?? this.customerId,
+      customerName: customerName ?? this.customerName,
+      customerPhone: customerPhone ?? this.customerPhone,
       invoiceNumber: invoiceNumber ?? this.invoiceNumber,
       saleDate: saleDate ?? this.saleDate,
       subtotal: subtotal ?? this.subtotal,
@@ -113,7 +128,7 @@ class Sale {
 
   @override
   String toString() =>
-      'Sale(id: $id, invoiceNumber: $invoiceNumber, customerId: $customerId, total: $total, status: $paymentStatus)';
+      'Sale(id: $id, invoiceNumber: $invoiceNumber, customerId: $customerId, customerName: $customerName, customerPhone: $customerPhone, total: $total, status: $paymentStatus)';
 
   @override
   bool operator ==(Object other) =>

@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import '../../../../core/di/injection.dart';
 import '../../../../core/routing/app_destinations.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/app_text_styles.dart';
+import '../../../../services/printing_service.dart';
 import '../../../navigation/presentation/bloc/navigation_bloc.dart';
 import '../../../../shared/models/sale.dart';
 import '../../../../shared/widgets/app_button.dart';
@@ -14,6 +16,7 @@ import '../../../../shared/widgets/loading_indicator.dart';
 import '../../../../shared/widgets/page_header.dart';
 import '../../../../shared/widgets/search_field.dart';
 import '../bloc/sales_bloc.dart';
+import '../widgets/bill_saved_dialog.dart';
 import '../widgets/sale_detail_dialog.dart';
 import '../widgets/sale_form_dialog.dart';
 
@@ -157,8 +160,11 @@ class _SalesPageState extends State<SalesPage> {
             if (state.selectedSale != null && state.selectedSaleItems != null) {
               final sale = state.selectedSale!;
               final items = state.selectedSaleItems!;
-              final customerName = state.getCustomerName(sale.customerId);
-              final customerPhone = state.getCustomerPhone(sale.customerId);
+              final customerName = sale.customerName ?? state.getCustomerName(sale.customerId);
+              final customerPhone = sale.customerPhone ?? state.getCustomerPhone(sale.customerId);
+              final customer = sale.customerId != null
+                  ? state.customers[sale.customerId]
+                  : null;
               final bookTitles = {
                 for (final b in state.books.values)
                   if (b.id != null) b.id!: b.name
@@ -170,11 +176,42 @@ class _SalesPageState extends State<SalesPage> {
                 items: items,
                 customerName: customerName,
                 customerPhone: customerPhone,
+                customerAddress: customer?.address,
                 bookTitles: bookTitles,
               );
             }
 
-            if (state.successMessage != null) {
+            if (state.lastCreatedSale != null &&
+                state.lastCreatedSaleItems != null) {
+              final savedSale = state.lastCreatedSale!;
+              final savedItems = state.lastCreatedSaleItems!;
+              final customerName = savedSale.customerName ??
+                  state.getCustomerName(savedSale.customerId);
+              final customerPhone = savedSale.customerPhone ??
+                  state.getCustomerPhone(savedSale.customerId);
+              final customer = savedSale.customerId != null
+                  ? state.customers[savedSale.customerId]
+                  : null;
+              final bookTitles = {
+                for (final b in state.books.values)
+                  if (b.id != null) b.id!: b.name,
+              };
+
+              context.read<SalesBloc>().add(const ClearLastCreatedSale());
+              if (state.successMessage != null) {
+                context.read<SalesBloc>().add(const ClearSaleMessages());
+              }
+
+              BillSavedDialog.show(
+                context,
+                sale: savedSale,
+                items: savedItems,
+                customerName: customerName,
+                customerPhone: customerPhone,
+                customerAddress: customer?.address,
+                bookTitles: bookTitles,
+              );
+            } else if (state.successMessage != null) {
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
                   content: Text(state.successMessage!),
@@ -533,35 +570,57 @@ class _SalesPageState extends State<SalesPage> {
                   ),
                 ),
                 DataCell(
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
+                  Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      if (isCash)
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                          margin: const EdgeInsets.only(right: 6),
-                          decoration: BoxDecoration(
-                            color: AppColors.successLight,
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: const Text(
-                            'CASH',
-                            style: TextStyle(
-                              fontSize: 10,
-                              fontWeight: FontWeight.w800,
-                              color: AppColors.successText,
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (isCash)
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              margin: const EdgeInsets.only(right: 6),
+                              decoration: BoxDecoration(
+                                color: AppColors.successLight,
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: const Text(
+                                'CASH',
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w800,
+                                  color: AppColors.successText,
+                                ),
+                              ),
+                            ),
+                          Flexible(
+                            child: Text(
+                              sale.customerName ?? customerName,
+                              style: AppTextStyles.bodyMedium.copyWith(
+                                fontWeight: FontWeight.w600,
+                              ),
+                              overflow: TextOverflow.ellipsis,
                             ),
                           ),
-                        ),
-                      Flexible(
-                        child: Text(
-                          customerName,
-                          style: AppTextStyles.bodyMedium.copyWith(
-                            fontWeight: FontWeight.w600,
-                          ),
-                          overflow: TextOverflow.ellipsis,
-                        ),
+                        ],
                       ),
+                      if (sale.customerPhone != null && sale.customerPhone!.isNotEmpty)
+                        Text(
+                          sale.customerPhone!,
+                          style: AppTextStyles.caption.copyWith(
+                            color: AppColors.textSecondary,
+                            fontSize: 11,
+                          ),
+                        )
+                      else if (!isCash && state.getCustomerPhone(sale.customerId).isNotEmpty)
+                        Text(
+                          state.getCustomerPhone(sale.customerId),
+                          style: AppTextStyles.caption.copyWith(
+                            color: AppColors.textSecondary,
+                            fontSize: 11,
+                          ),
+                        ),
                     ],
                   ),
                 ),
@@ -597,6 +656,13 @@ class _SalesPageState extends State<SalesPage> {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       IconButton(
+                        icon: const Icon(Icons.print_outlined, size: 18),
+                        color: AppColors.secondary,
+                        tooltip: 'Reprint Bill / Invoice',
+                        splashRadius: 18,
+                        onPressed: () => _reprintSale(sale, state),
+                      ),
+                      IconButton(
                         icon: const Icon(Icons.visibility_outlined, size: 18),
                         color: AppColors.primary,
                         tooltip: 'View Invoice Details',
@@ -619,5 +685,39 @@ class _SalesPageState extends State<SalesPage> {
         ),
       ],
     );
+  }
+
+  Future<void> _reprintSale(Sale sale, SalesLoaded state) async {
+    try {
+      final items =
+          await Injection.instance.saleRepository.getItemsForSale(sale.id!);
+      final customer =
+          sale.customerId != null ? state.customers[sale.customerId] : null;
+      final bookTitles = {
+        for (final b in state.books.values)
+          if (b.id != null) b.id!: b.name,
+      };
+
+      if (!mounted) return;
+
+      PrintingService.showPrintPreviewDialog(
+        context,
+        sale: sale,
+        items: items,
+        customerName: sale.customerName ?? state.getCustomerName(sale.customerId),
+        customerPhone: sale.customerPhone ?? state.getCustomerPhone(sale.customerId),
+        customerAddress: customer?.address,
+        bookTitles: bookTitles,
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to load bill items for printing: $e'),
+            backgroundColor: AppColors.error,
+          ),
+        );
+      }
+    }
   }
 }

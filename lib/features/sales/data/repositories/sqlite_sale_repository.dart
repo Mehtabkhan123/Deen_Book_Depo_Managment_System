@@ -1,6 +1,7 @@
 import '../../../../core/constants/db_constants.dart';
 import '../../../../core/database/database_helper.dart';
 import '../../../../core/errors/exceptions.dart';
+import '../../../../core/utils/phone_validator.dart';
 import '../../../../shared/models/sale.dart';
 import '../../../../shared/models/sale_item.dart';
 import '../../../books/domain/repositories/book_repository.dart';
@@ -63,9 +64,47 @@ class SqliteSaleRepository implements SaleRepository {
         }
       }
 
-      // 3. Insert parent sales record
+      // 3. Resolve customer snapshot details (name & phone)
+      String? customerName = sale.customerName;
+      String? customerPhone = sale.customerPhone;
+      if (sale.customerId != null && (customerName == null || customerPhone == null)) {
+        final custRows = await _dbHelper.query(
+          DbConstants.tableCustomers,
+          where: '${DbConstants.colId} = ?',
+          whereArgs: [sale.customerId],
+          limit: 1,
+          executor: txn,
+        );
+        if (custRows.isNotEmpty) {
+          customerName ??= custRows.first[DbConstants.colCustomerName] as String?;
+          customerPhone ??= custRows.first[DbConstants.colCustomerPhone] as String?;
+        }
+      }
+
+      // Enforce required customer and phone number validation for wholesale bills
+      if (sale.invoiceNumber.trim().toUpperCase().startsWith('WHO')) {
+        if (customerName == null || customerName.trim().isEmpty) {
+          throw const ValidationException('Customer name is required for wholesale bills.');
+        }
+        if (customerPhone == null || customerPhone.trim().isEmpty) {
+          throw const ValidationException('Customer phone number is required for wholesale bills.');
+        }
+        if (!PhoneValidator.isValid(customerPhone)) {
+          throw ValidationException(
+            'Invalid customer phone number "$customerPhone" for wholesale bill.',
+          );
+        }
+      } else if (customerPhone != null && customerPhone.trim().isNotEmpty) {
+        if (!PhoneValidator.isValid(customerPhone)) {
+          throw ValidationException('Invalid customer phone number "$customerPhone".');
+        }
+      }
+
+      // 4. Insert parent sales record
       final now = DateTime.now().toIso8601String();
       final saleMap = sale.toMap();
+      saleMap[DbConstants.colSaleCustomerName] = customerName;
+      saleMap[DbConstants.colSaleCustomerPhone] = customerPhone;
       saleMap[DbConstants.colCreatedAt] =
           sale.createdAt.isEmpty ? now : sale.createdAt;
       saleMap[DbConstants.colSaleDate] =
@@ -79,7 +118,7 @@ class SqliteSaleRepository implements SaleRepository {
         executor: txn,
       );
 
-      // 4. Insert items, deduct inventory, and log stock movements
+      // 5. Insert items, deduct inventory, and log stock movements
       for (final item in items) {
         final itemMap = item.toMap();
         itemMap[DbConstants.colSaleItemSaleId] = saleId;
@@ -173,9 +212,9 @@ class SqliteSaleRepository implements SaleRepository {
     final term = '%$trimmed%';
     final results = await _dbHelper.query(
       DbConstants.tableSales,
-      where: '${DbConstants.colSaleInvoiceNumber} LIKE ?',
-      whereArgs: [term],
-      orderBy: '${DbConstants.colSaleDate} DESC',
+      where: '${DbConstants.colSaleInvoiceNumber} LIKE ? OR ${DbConstants.colSaleCustomerName} LIKE ? OR ${DbConstants.colSaleCustomerPhone} LIKE ?',
+      whereArgs: [term, term, term],
+      orderBy: '${DbConstants.colSaleDate} DESC, ${DbConstants.colId} DESC',
     );
     return results.map((row) => Sale.fromMap(row)).toList();
   }

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/app_text_styles.dart';
+import '../../../../services/printing_service.dart';
 import '../../../../shared/models/sale.dart';
 import '../../../../shared/models/sale_item.dart';
 import '../../../../shared/widgets/app_button.dart';
@@ -11,6 +12,7 @@ class SaleDetailDialog extends StatelessWidget {
   final List<SaleItem> items;
   final String customerName;
   final String customerPhone;
+  final String? customerAddress;
   final Map<int, String> bookTitles;
 
   const SaleDetailDialog({
@@ -19,6 +21,7 @@ class SaleDetailDialog extends StatelessWidget {
     required this.items,
     required this.customerName,
     required this.customerPhone,
+    this.customerAddress,
     this.bookTitles = const {},
   });
 
@@ -28,6 +31,7 @@ class SaleDetailDialog extends StatelessWidget {
     required List<SaleItem> items,
     required String customerName,
     required String customerPhone,
+    String? customerAddress,
     Map<int, String> bookTitles = const {},
   }) {
     return showDialog<void>(
@@ -37,6 +41,7 @@ class SaleDetailDialog extends StatelessWidget {
         items: items,
         customerName: customerName,
         customerPhone: customerPhone,
+        customerAddress: customerAddress,
         bookTitles: bookTitles,
       ),
     );
@@ -300,8 +305,24 @@ class SaleDetailDialog extends StatelessWidget {
                 border: Border(top: BorderSide(color: AppColors.neutral200)),
               ),
               child: Row(
-                mainAxisAlignment: MainAxisAlignment.end,
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
+                  AppButton(
+                    label: 'Print / Reprint Bill',
+                    icon: Icons.print_rounded,
+                    variant: AppButtonVariant.primary,
+                    onPressed: () {
+                      PrintingService.showPrintPreviewDialog(
+                        context,
+                        sale: sale,
+                        items: items,
+                        customerName: customerName,
+                        customerPhone: customerPhone,
+                        customerAddress: customerAddress,
+                        bookTitles: bookTitles,
+                      );
+                    },
+                  ),
                   AppButton(
                     label: 'Close',
                     variant: AppButtonVariant.outline,

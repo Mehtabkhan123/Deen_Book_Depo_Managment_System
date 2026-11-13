@@ -94,6 +94,8 @@ class DbConstants {
   // 7. Sales Table Columns
   // ==========================================
   static const String colSaleCustomerId = 'customer_id';
+  static const String colSaleCustomerName = 'customer_name';
+  static const String colSaleCustomerPhone = 'customer_phone';
   static const String colSaleInvoiceNumber = 'invoice_number';
   static const String colSaleDate = 'sale_date';
   static const String colSaleSubtotal = 'subtotal';

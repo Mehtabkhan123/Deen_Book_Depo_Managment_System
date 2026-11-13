@@ -4,9 +4,12 @@ import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
 
+import '../../../../core/di/injection.dart';
 import '../../../../core/routing/app_destinations.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/app_text_styles.dart';
+import '../../../../core/utils/phone_validator.dart';
+import '../../../../services/printing_service.dart';
 import '../../../../shared/models/book.dart';
 import '../../../../shared/models/customer.dart';
 import '../../../../shared/models/sale.dart';
@@ -17,9 +20,11 @@ import '../../../../shared/widgets/app_dropdown.dart';
 import '../../../../shared/widgets/empty_state.dart';
 import '../../../../shared/widgets/loading_indicator.dart';
 import '../../../books/presentation/bloc/books_bloc.dart';
+import '../../../customers/presentation/widgets/customer_form_dialog.dart';
 import '../../../inventory/presentation/bloc/inventory_bloc.dart';
 import '../../../navigation/presentation/bloc/navigation_bloc.dart';
 import '../bloc/sales_bloc.dart';
+import '../widgets/bill_saved_dialog.dart';
 import '../widgets/sale_detail_dialog.dart';
 
 /// POS Sale Pricing Tier
@@ -133,8 +138,45 @@ class _PosBillingPageState extends State<PosBillingPage> {
             ? item.book.retailPrice
             : item.book.wholesalePrice;
       }
+
+      // Wholesale bills require registered customer
+      if (newTier == PosSaleTier.wholesale) {
+        _isWalkIn = false;
+        final state = context.read<SalesBloc>().state;
+        if (state is SalesLoaded && _selectedCustomer == null && state.customers.isNotEmpty) {
+          _selectedCustomer = state.customers.values.first;
+        }
+      }
+
       _syncPaidAmountIfFullPaid();
     });
+  }
+
+  Future<void> _openAddCustomerDialog() async {
+    final salesBloc = context.read<SalesBloc>();
+    await CustomerFormDialog.show(
+      context,
+      requirePhone: _saleTier == PosSaleTier.wholesale,
+      onSave: (newCustomer) async {
+        try {
+          final repo = Injection.instance.customerRepository;
+          final createdId = await repo.create(newCustomer);
+          final created = await repo.getById(createdId);
+          if (created != null && mounted) {
+            salesBloc.add(const RefreshSales());
+            setState(() {
+              _isWalkIn = false;
+              _selectedCustomer = created;
+            });
+            _showSnackbar('Customer "${created.name}" registered successfully.');
+          }
+        } catch (e) {
+          if (mounted) {
+            _showSnackbar('Failed to create customer: $e', isError: true);
+          }
+        }
+      },
+    );
   }
 
   void _onSearchQueryChanged(String query) {
@@ -372,14 +414,44 @@ class _PosBillingPageState extends State<PosBillingPage> {
       }
     }
 
-    // 2. Validate Customer Credit
+    // 2. Validate Customer Details for Wholesale vs Retail
     final status = _calculatedPaymentStatus;
-    if ((status == 'UNPAID' || status == 'PARTIAL') && _isWalkIn) {
-      _showSnackbar(
-        'Credit or partial sales require a registered customer. Please select a customer or collect full payment.',
-        isError: true,
-      );
-      return;
+    if (_saleTier == PosSaleTier.wholesale) {
+      if (_isWalkIn || _selectedCustomer == null) {
+        _showSnackbar(
+          'Wholesale bills require a registered customer with a valid phone number. Please select or add a customer.',
+          isError: true,
+        );
+        return;
+      }
+      if (_selectedCustomer!.name.trim().isEmpty) {
+        _showSnackbar('Customer name is required for wholesale bills.', isError: true);
+        return;
+      }
+      final phone = _selectedCustomer!.phone;
+      if (phone == null || phone.trim().isEmpty) {
+        _showSnackbar(
+          'Customer phone number is required for wholesale bills. Please update customer with a valid phone number.',
+          isError: true,
+        );
+        return;
+      }
+      if (!PhoneValidator.isValid(phone)) {
+        _showSnackbar(
+          'Customer phone number "$phone" is invalid. Please enter a valid phone number (7-15 digits).',
+          isError: true,
+        );
+        return;
+      }
+    } else {
+      // Retail: Validate Customer Credit
+      if ((status == 'UNPAID' || status == 'PARTIAL') && _isWalkIn) {
+        _showSnackbar(
+          'Credit or partial sales require a registered customer. Please select a customer or collect full payment.',
+          isError: true,
+        );
+        return;
+      }
     }
 
     // 3. Compute final financial fields for SQLite record
@@ -406,6 +478,8 @@ class _PosBillingPageState extends State<PosBillingPage> {
 
     final sale = Sale(
       customerId: _isWalkIn ? null : _selectedCustomer?.id,
+      customerName: _isWalkIn ? 'Cash / Walk-in Customer' : _selectedCustomer?.name,
+      customerPhone: _isWalkIn ? null : _selectedCustomer?.phone,
       invoiceNumber: _invoiceNumber.trim(),
       saleDate: _saleDate,
       subtotal: rawSubtotal,
@@ -456,6 +530,9 @@ class _PosBillingPageState extends State<PosBillingPage> {
             final items = state.selectedSaleItems!;
             final customerName = state.getCustomerName(sale.customerId);
             final customerPhone = state.getCustomerPhone(sale.customerId);
+            final customer = sale.customerId != null
+                ? state.customers[sale.customerId]
+                : null;
             final bookTitles = {
               for (final b in state.books.values)
                 if (b.id != null) b.id!: b.name,
@@ -467,11 +544,43 @@ class _PosBillingPageState extends State<PosBillingPage> {
               items: items,
               customerName: customerName,
               customerPhone: customerPhone,
+              customerAddress: customer?.address,
               bookTitles: bookTitles,
             );
           }
 
-          if (state.successMessage != null) {
+          if (state.lastCreatedSale != null &&
+              state.lastCreatedSaleItems != null) {
+            final savedSale = state.lastCreatedSale!;
+            final savedItems = state.lastCreatedSaleItems!;
+            final customerName = savedSale.customerName ??
+                state.getCustomerName(savedSale.customerId);
+            final customerPhone = savedSale.customerPhone ??
+                state.getCustomerPhone(savedSale.customerId);
+            final customer = savedSale.customerId != null
+                ? state.customers[savedSale.customerId]
+                : null;
+            final bookTitles = {
+              for (final b in state.books.values)
+                if (b.id != null) b.id!: b.name,
+            };
+
+            _clearCart();
+            context.read<SalesBloc>().add(const ClearLastCreatedSale());
+            if (state.successMessage != null) {
+              context.read<SalesBloc>().add(const ClearSaleMessages());
+            }
+
+            BillSavedDialog.show(
+              context,
+              sale: savedSale,
+              items: savedItems,
+              customerName: customerName,
+              customerPhone: customerPhone,
+              customerAddress: customer?.address,
+              bookTitles: bookTitles,
+            );
+          } else if (state.successMessage != null) {
             _showSnackbar(state.successMessage!);
             _clearCart();
             context.read<SalesBloc>().add(const ClearSaleMessages());
@@ -1068,16 +1177,21 @@ class _PosBillingPageState extends State<PosBillingPage> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text(
-                      'Checkout Cart Items (${_cartItems.length})',
-                      style: AppTextStyles.h3.copyWith(
-                        fontWeight: FontWeight.w700,
-                        color: AppColors.textPrimary,
+                    Flexible(
+                      child: Text(
+                        'Checkout Cart Items (${_cartItems.length})',
+                        style: AppTextStyles.h3.copyWith(
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.textPrimary,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                    const Spacer(),
-                    if (_cartItems.isNotEmpty)
+                    if (_cartItems.isNotEmpty) ...[
+                      const SizedBox(width: 8),
                       TextButton.icon(
                         icon: const Icon(
                           Icons.delete_sweep_rounded,
@@ -1093,6 +1207,7 @@ class _PosBillingPageState extends State<PosBillingPage> {
                         ),
                         onPressed: _clearCart,
                       ),
+                    ],
                   ],
                 ),
                 const SizedBox(height: 10),
@@ -1451,29 +1566,39 @@ class _PosBillingPageState extends State<PosBillingPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text(
-                      'Customer & Channel',
-                      style: AppTextStyles.h3.copyWith(
-                        fontWeight: FontWeight.w700,
+                    Flexible(
+                      child: Text(
+                        'Customer & Channel',
+                        style: AppTextStyles.h3.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                    const Spacer(),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 2,
-                      ),
-                      decoration: BoxDecoration(
-                        color: AppColors.neutral100,
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      child: Text(
-                        'INV: #$_invoiceNumber',
-                        style: const TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w700,
-                          color: AppColors.neutral700,
+                    const SizedBox(width: 8),
+                    Flexible(
+                      fit: FlexFit.loose,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: AppColors.neutral100,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          'INV: #$_invoiceNumber',
+                          style: const TextStyle(
+                            fontSize: 10.5,
+                            fontWeight: FontWeight.w700,
+                            color: AppColors.neutral700,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ),
                     ),
@@ -1530,6 +1655,13 @@ class _PosBillingPageState extends State<PosBillingPage> {
                               : FontWeight.w500,
                         ),
                         onSelected: (val) {
+                          if (_saleTier == PosSaleTier.wholesale) {
+                            _showSnackbar(
+                              'Wholesale bills require a registered customer with a valid phone number.',
+                              isError: true,
+                            );
+                            return;
+                          }
                           setState(() {
                             _isWalkIn = true;
                             _selectedCustomer = null;
@@ -1597,24 +1729,119 @@ class _PosBillingPageState extends State<PosBillingPage> {
                   ],
                 ),
 
-                // Customer Dropdown if Registered
+                // Customer Dropdown & Add Customer Button
                 if (!_isWalkIn) ...[
                   const SizedBox(height: 12),
-                  AppDropdown<Customer>(
-                    label: 'Select Customer',
-                    value: _selectedCustomer,
-                    items: customers.map((c) {
-                      return DropdownMenuItem<Customer>(
-                        value: c,
-                        child: Text('${c.name} (${c.phone ?? "No Phone"})'),
-                      );
-                    }).toList(),
-                    onChanged: (val) {
-                      setState(() {
-                        _selectedCustomer = val;
-                      });
-                    },
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Expanded(
+                        child: AppDropdown<Customer>(
+                          label: 'Select Customer *',
+                          value: _selectedCustomer,
+                          items: customers.map((c) {
+                            return DropdownMenuItem<Customer>(
+                              value: c,
+                              child: Text(
+                                '${c.name} (${c.phone ?? "No Phone"})',
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            );
+                          }).toList(),
+                          onChanged: (val) {
+                            setState(() {
+                              _selectedCustomer = val;
+                            });
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      IconButton(
+                        icon: const Icon(Icons.person_add_alt_1_rounded),
+                        tooltip: 'Add New Customer',
+                        style: IconButton.styleFrom(
+                          backgroundColor: AppColors.primaryContainer,
+                          foregroundColor: AppColors.primary,
+                        ),
+                        onPressed: _openAddCustomerDialog,
+                      ),
+                    ],
                   ),
+                  if (_selectedCustomer != null) ...[
+                    const SizedBox(height: 10),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: AppColors.neutral50,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: (_saleTier == PosSaleTier.wholesale &&
+                                  (_selectedCustomer!.phone == null ||
+                                      !PhoneValidator.isValid(_selectedCustomer!.phone!)))
+                              ? AppColors.error
+                              : AppColors.neutral200,
+                        ),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              const Icon(Icons.badge_outlined, size: 14, color: AppColors.neutral700),
+                              const SizedBox(width: 6),
+                              Expanded(
+                                child: Text(
+                                  _selectedCustomer!.name,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w700,
+                                    fontSize: 12.5,
+                                    color: AppColors.neutral900,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          Row(
+                            children: [
+                              const Icon(Icons.phone_outlined, size: 14, color: AppColors.neutral700),
+                              const SizedBox(width: 6),
+                              Expanded(
+                                child: Text(
+                                  _selectedCustomer!.phone != null && _selectedCustomer!.phone!.isNotEmpty
+                                      ? 'Phone: ${_selectedCustomer!.phone!}'
+                                      : 'No phone number provided',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: _selectedCustomer!.phone != null &&
+                                            PhoneValidator.isValid(_selectedCustomer!.phone!)
+                                        ? AppColors.neutral700
+                                        : AppColors.error,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
+                          ),
+                          if (_saleTier == PosSaleTier.wholesale &&
+                              (_selectedCustomer!.phone == null ||
+                                  !PhoneValidator.isValid(_selectedCustomer!.phone!))) ...[
+                            const SizedBox(height: 4),
+                            const Text(
+                              'Valid phone number required for wholesale bills (7-15 digits)',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: AppColors.error,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ],
                 ],
               ],
             ),
@@ -1815,13 +2042,20 @@ class _PosBillingPageState extends State<PosBillingPage> {
                 _buildSettlementFeedbackBadge(),
                 const SizedBox(height: 16),
 
-                // Checkout Button
+                // Checkout Action Buttons
+                AppButton(
+                  label: isCreating ? 'Saving Bill...' : 'SAVE BILL',
+                  icon: Icons.save_rounded,
+                  variant: AppButtonVariant.primary,
+                  onPressed: isCreating ? null : _executeCheckout,
+                ),
+                const SizedBox(height: 8),
                 AppButton(
                   label: isCreating
                       ? 'Processing Transaction...'
                       : 'COMPLETE & SAVE SALE',
                   icon: Icons.check_circle_rounded,
-                  variant: AppButtonVariant.primary,
+                  variant: AppButtonVariant.outline,
                   onPressed: isCreating ? null : _executeCheckout,
                 ),
               ],
@@ -1844,10 +2078,14 @@ class _PosBillingPageState extends State<PosBillingPage> {
                         color: AppColors.textSecondary,
                       ),
                       const SizedBox(width: 8),
-                      Text(
-                        'Recent Counter Invoices',
-                        style: AppTextStyles.bodyMedium.copyWith(
-                          fontWeight: FontWeight.w700,
+                      Flexible(
+                        child: Text(
+                          'Recent Counter Invoices',
+                          style: AppTextStyles.bodyMedium.copyWith(
+                            fontWeight: FontWeight.w700,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ),
                     ],
@@ -1877,17 +2115,32 @@ class _PosBillingPageState extends State<PosBillingPage> {
                             color: AppColors.textSecondary,
                           ),
                         ),
-                        trailing: IconButton(
-                          icon: const Icon(
-                            Icons.visibility_outlined,
-                            size: 18,
-                            color: AppColors.primary,
-                          ),
-                          onPressed: () {
-                            context.read<SalesBloc>().add(
-                              LoadSaleDetails(sale.id!),
-                            );
-                          },
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              icon: const Icon(
+                                Icons.print_outlined,
+                                size: 18,
+                                color: AppColors.secondary,
+                              ),
+                              tooltip: 'Reprint Bill',
+                              onPressed: () => _reprintSale(context, sale),
+                            ),
+                            IconButton(
+                              icon: const Icon(
+                                Icons.visibility_outlined,
+                                size: 18,
+                                color: AppColors.primary,
+                              ),
+                              tooltip: 'View Details',
+                              onPressed: () {
+                                context.read<SalesBloc>().add(
+                                  LoadSaleDetails(sale.id!),
+                                );
+                              },
+                            ),
+                          ],
                         ),
                       );
                     },
@@ -2030,6 +2283,48 @@ class _PosBillingPageState extends State<PosBillingPage> {
           ],
         ),
       );
+    }
+  }
+
+  Future<void> _reprintSale(BuildContext context, Sale sale) async {
+    final blocState = context.read<SalesBloc>().state;
+    String customerName = 'Cash / Walk-in Customer';
+    String? customerPhone;
+    String? customerAddress;
+    Map<int, String> bookTitles = {};
+
+    if (blocState is SalesLoaded) {
+      customerName = blocState.getCustomerName(sale.customerId);
+      customerPhone = blocState.getCustomerPhone(sale.customerId);
+      final c =
+          sale.customerId != null ? blocState.customers[sale.customerId] : null;
+      customerAddress = c?.address;
+      bookTitles = {
+        for (final b in blocState.books.values)
+          if (b.id != null) b.id!: b.name,
+      };
+    }
+
+    try {
+      final items =
+          await Injection.instance.saleRepository.getItemsForSale(sale.id!);
+
+      if (!context.mounted) return;
+
+      PrintingService.showPrintPreviewDialog(
+        context,
+        sale: sale,
+        items: items,
+        customerName: customerName,
+        customerPhone: customerPhone,
+        customerAddress: customerAddress,
+        bookTitles: bookTitles,
+      );
+    } catch (e) {
+      if (context.mounted) {
+        _showSnackbar('Failed to load bill items for printing: $e',
+            isError: true);
+      }
     }
   }
 }
